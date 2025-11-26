@@ -14,7 +14,7 @@ try:
 except ImportError:
     # Fallback simple si tqdm no está instalado (Código omitido por brevedad, se asume que funciona)
     def tqdm(iterable=None, total=None, desc="", unit=""):
-        # ... (código de fallback) ...
+       
         if iterable is None:
             class SimpleProgressBar:
                 def __init__(self, total, desc, unit):

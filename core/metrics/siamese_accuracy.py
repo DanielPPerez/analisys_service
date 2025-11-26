@@ -10,7 +10,6 @@ def siamese_accuracy_metric(margin=1.0):
     para pares positivos y por encima para pares negativos.
     """
     # *** AJUSTE DE UMBRAL ***
-    # Cambiado de margin/2.0 (0.5) a un valor más alto (0.7) para el inicio del entrenamiento.
     threshold = margin 
     
     def acc_fn(y_true, y_pred):
