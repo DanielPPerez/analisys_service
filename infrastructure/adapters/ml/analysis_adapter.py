@@ -132,10 +132,14 @@ class AnalysisAdapter(IAnalyzer): # ¡Implementa el Puerto!
         print(f"✅ Se cargaron {len(templates)} embeddings de plantillas desde {self.templates_dir}")
         return templates
 
-    def _distance_to_score(self, distance: float, max_distance=15.0) -> int:
-        """Convierte la distancia euclidiana a puntuación (Lógica de Dominio)."""
+    def _distance_to_score(self, distance: float, max_distance=10.0) -> float:
+        """
+        Convierte la distancia euclidiana a puntuación (Lógica de Dominio).
+        Ajustado para ser más estricto y no inflar el score.
+        """
+        # Reducir max_distance para ser más estricto
         similarity = max(0, 1 - (distance / max_distance))
-        return int(min(100, similarity * 100)) # Puntuación máxima 100
+        return float(min(100, similarity * 100))  # Puntuación máxima 100
     
     # MÉTODO PRINCIPAL QUE CUMPLE EL CONTRATO IAnalyzer
     def analyze_image(self, letter_char: str, image_data: bytes) -> Dict[str, Any]:
@@ -160,28 +164,39 @@ class AnalysisAdapter(IAnalyzer): # ¡Implementa el Puerto!
             # Error de preprocesamiento (imagen vacía, no decodificable, etc.)
             return {"error": str(e), "score": 0, "deviation_code": "no_contour_found"}
 
-        # 3. Calcular distancia y puntaje global
+        # 3. Calcular distancia y puntaje base del modelo siamés
         distance = np.linalg.norm(user_embedding - template_embedding)
-        score_global = self._distance_to_score(float(distance))
+        siamese_score = self._distance_to_score(float(distance))
         
         # 3.5. Detectar si la imagen es idéntica a la plantilla (distancia muy pequeña)
-        # Si la distancia es muy pequeña, es probable que sea la misma imagen
         IDENTICAL_THRESHOLD = 0.1  # Umbral muy bajo para detectar imágenes idénticas
         is_identical = distance < IDENTICAL_THRESHOLD
+        
+        # 3.6. Detectar si el carácter es completamente incorrecto (distancia muy alta)
+        # Si la distancia es muy alta, es probable que sea un carácter diferente
+        WRONG_CHAR_THRESHOLD = 8.0  # Umbral alto para detectar caracteres incorrectos
+        is_wrong_char = distance > WRONG_CHAR_THRESHOLD
         
         # 4. Análisis detallado CV (Llamada al servicio de Dominio)
         try:
             detalles_cv = analyze_errors_cv(image_data, letter_char=letter_char, templates_dir=self.templates_dir)
             
+            # Si el carácter es incorrecto, forzar todas las métricas a 0
+            if is_wrong_char:
+                detalles_cv = {
+                    "inclinacion": {"score": 0.0, "deviation_code": "wrong_character"},
+                    "proporcion_wh": {"score": 0.0, "deviation_code": "wrong_character"},
+                    "espaciado": {"score": 0.0, "deviation_code": "wrong_character"},
+                    "consistencia": {"score": 0.0, "deviation_code": "wrong_character"}
+                }
             # Si la imagen es idéntica a la plantilla, forzar todas las métricas a 100
-            if is_identical:
+            elif is_identical:
                 detalles_cv = {
                     "inclinacion": {"score": 100.0, "deviation_code": "inclinacion_optima"},
                     "proporcion_wh": {"score": 100.0, "deviation_code": "proporcion_optima"},
                     "espaciado": {"score": 100.0, "deviation_code": "espaciado_interno_optimo"},
                     "consistencia": {"score": 100.0, "deviation_code": "consistencia_optima"}
                 }
-                score_global = 100  # También forzar el score global a 100
         except Exception as e:
              print(f"⚠️  Error en análisis CV: {e}")
              detalles_cv = {
@@ -197,22 +212,42 @@ class AnalysisAdapter(IAnalyzer): # ¡Implementa el Puerto!
         espaciado_data = detalles_cv.get('espaciado', {})
         consistencia_data = detalles_cv.get('consistencia', {})
         
+        # 5.5. Calcular score global como promedio ponderado de todas las métricas
+        # Esto evita que el score se infle y refleja mejor el rendimiento real
+        inclinacion_score = inclinacion_data.get('score', 0.0)
+        proporcion_score = proporcion_data.get('score', 0.0)
+        espaciado_score = espaciado_data.get('score', 0.0)
+        consistencia_score = consistencia_data.get('score', 0.0)
+        
+        # Si el carácter es incorrecto, el score global debe ser 0
+        if is_wrong_char:
+            score_global = 0.0
+        # Si es idéntico, el score global es 100
+        elif is_identical:
+            score_global = 100.0
+        else:
+            # Promedio ponderado: 40% modelo siamés, 60% métricas CV
+            # Las métricas CV tienen más peso porque son más específicas
+            cv_average = (inclinacion_score + proporcion_score + espaciado_score + consistencia_score) / 4.0
+            score_global = (siamese_score * 0.4) + (cv_average * 0.6)
+            score_global = round(score_global, 1)
+        
         # 6. Generar feedback basado en reglas (Lógica de Dominio)
         feedback_base = self.rule_generator.generate_feedback({
             "inclinacion": {
-                "score": inclinacion_data.get('score', 0.0),
+                "score": inclinacion_score,
                 "deviation_code": inclinacion_data.get('deviation_code', 'no_data')
             },
             "proporcion": {
-                "score": proporcion_data.get('score', 0.0),
+                "score": proporcion_score,
                 "deviation_code": proporcion_data.get('deviation_code', 'no_data')
             },
             "espaciado": {
-                "score": espaciado_data.get('score', 0.0),
+                "score": espaciado_score,
                 "deviation_code": espaciado_data.get('deviation_code', 'no_data')
             },
             "consistencia": {
-                "score": consistencia_data.get('score', 0.0),
+                "score": consistencia_score,
                 "deviation_code": consistencia_data.get('deviation_code', 'no_data')
             }
         })
@@ -220,10 +255,10 @@ class AnalysisAdapter(IAnalyzer): # ¡Implementa el Puerto!
         # 7. Formatear la salida final (la puntuación y los códigos son lo importante para el LLM)
         return {
             "score_global": score_global,
-            "puntuacion_inclinacion": inclinacion_data.get('score', 0.0),
-            "puntuacion_proporcion": proporcion_data.get('score', 0.0),
-            "puntuacion_espaciado": espaciado_data.get('score', 0.0),
-            "puntuacion_consistencia": consistencia_data.get('score', 0.0),
+            "puntuacion_inclinacion": inclinacion_score,
+            "puntuacion_proporcion": proporcion_score,
+            "puntuacion_espaciado": espaciado_score,
+            "puntuacion_consistencia": consistencia_score,
             "deviation_code_global": feedback_base.get("areas_mejora", "").split('.')[0] if feedback_base.get("areas_mejora") != "¡Tu letra es prácticamente perfecta! No tenemos ninguna sugerencia por ahora." else "proporcion_optima",
             "fortalezas_base": feedback_base.get("fortalezas", ""),
             "areas_mejora_base": feedback_base.get("areas_mejora", "")

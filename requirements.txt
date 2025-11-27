@@ -16,3 +16,4 @@ openai
 python-multipart
 fastapi
 python-dotenv
+tensorflow-datasets

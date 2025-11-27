@@ -6,6 +6,7 @@ import tensorflow as tf
 import numpy as np
 import sys
 import matplotlib.pyplot as plt
+import cv2
 from typing import Dict, Any, Tuple, List
 
 # Intentar importar tqdm, si no está disponible usar una alternativa simple
@@ -59,6 +60,14 @@ from core.models.siamese_model import build_base_network, build_siamese_model
 from core.domain_services.losses import contrastive_loss
 from core.domain_services.image_preprocessor import preprocess_image 
 from core.metrics.siamese_accuracy import siamese_accuracy_metric
+
+# Importaciones para EMNIST
+try:
+    import tensorflow_datasets as tfds
+    EMNIST_AVAILABLE = True
+except ImportError:
+    EMNIST_AVAILABLE = False
+    print("⚠️  tensorflow-datasets no está instalado. EMNIST no estará disponible.")
 # =================================================================
 
 # ==============================
@@ -72,7 +81,13 @@ EPOCHS = 12
 # *** AJUSTE SUGERIDO: Aumentar Epochs y/o Batch Size si los recursos lo permiten ***
 EPOCHS = 20 
 # BATCH_SIZE = 64 
-NUM_CLASSES = 0  
+NUM_CLASSES = 0
+
+# Configuración para EMNIST
+USE_EMNIST = True  # Cambiar a False para usar solo el dataset local
+EMNIST_DATASET = "emnist/letters"  # 'emnist/letters' para letras, 'emnist/balanced' para balanceado
+EMNIST_SPLIT = "train"  # 'train' o 'test'
+EMNIST_SAMPLES_PER_CLASS = 100  # Número de muestras por clase a usar de EMNIST (None para usar todas)  
 
 # ==============================
 # 1. Cargar imágenes desde carpetas (SIN CAMBIOS, ya estaba bien)
@@ -168,6 +183,158 @@ def load_dataset_from_directory(dataset_dir: str) -> Tuple[np.ndarray, np.ndarra
     return np.array(images), np.array(labels), final_class_names
 
 # ==============================
+# 1.5. Cargar dataset EMNIST
+# ==============================
+def load_emnist_dataset(dataset_name: str = "emnist/letters", 
+                       split: str = "train",
+                       samples_per_class: int = None,
+                       target_size: Tuple[int, int] = (128, 128)) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """
+    Carga el dataset EMNIST y lo preprocesa para el entrenamiento.
+    
+    Args:
+        dataset_name: Nombre del dataset EMNIST ('emnist/letters', 'emnist/balanced', etc.)
+        split: División a usar ('train', 'test')
+        samples_per_class: Número de muestras por clase a usar (None para usar todas)
+        target_size: Tamaño objetivo de las imágenes (alto, ancho)
+    
+    Returns:
+        Tuple de (imágenes, etiquetas, nombres_de_clases)
+    """
+    if not EMNIST_AVAILABLE:
+        raise ImportError("tensorflow-datasets no está disponible. Instálalo con: pip install tensorflow-datasets")
+    
+    print(f"\n=== CARGANDO DATASET EMNIST: {dataset_name} ===")
+    
+    # Cargar el dataset
+    try:
+        ds, ds_info = tfds.load(dataset_name, split=split, with_info=True, as_supervised=True)
+    except Exception as e:
+        raise RuntimeError(f"Error al cargar EMNIST: {e}. Asegúrate de que el dataset esté disponible.")
+    
+    # Obtener información del dataset
+    num_classes = ds_info.features['label'].num_classes
+    class_names = [chr(ord('A') + i) if i < 26 else chr(ord('a') + i - 26) if i < 52 else str(i - 52) 
+                   for i in range(num_classes)]
+    
+    print(f"Clases en EMNIST: {num_classes}")
+    print(f"Tamaño del split '{split}': {ds_info.splits[split].num_examples} ejemplos")
+    
+    images = []
+    labels = []
+    
+    # Contador por clase para limitar muestras
+    class_counts = {}
+    
+    print("Procesando imágenes de EMNIST...")
+    with tqdm(total=ds_info.splits[split].num_examples, desc="Cargando EMNIST", unit="img") as pbar:
+        for image, label in ds:
+            label_int = int(label.numpy())
+            
+            # Limitar muestras por clase si se especifica
+            if samples_per_class is not None:
+                if label_int not in class_counts:
+                    class_counts[label_int] = 0
+                if class_counts[label_int] >= samples_per_class:
+                    pbar.update(1)
+                    continue
+                class_counts[label_int] += 1
+            
+            # Convertir imagen a numpy y preprocesar
+            img = image.numpy()
+            
+            # EMNIST viene en formato (28, 28) o similar, necesitamos redimensionar
+            if len(img.shape) == 2:
+                # Imagen en escala de grises
+                img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+                # Normalizar a [0, 1] y luego a [0, 255]
+                img = (img / 255.0 * 255.0).astype(np.uint8)
+            elif len(img.shape) == 3:
+                # Imagen con canales
+                img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+                if img.shape[2] == 1:
+                    img = img.squeeze(2)
+            
+            # Convertir a bytes y usar el preprocesador del dominio
+            try:
+                # Convertir a formato de bytes (PNG)
+                import io
+                from PIL import Image
+                img_pil = Image.fromarray(img, mode='L')
+                img_bytes = io.BytesIO()
+                img_pil.save(img_bytes, format='PNG')
+                img_bytes = img_bytes.getvalue()
+                
+                # Preprocesar usando el preprocesador del dominio
+                img_processed = preprocess_image(img_bytes)
+                
+                if img_processed.ndim == 4 and img_processed.shape[0] == 1:
+                    img_squeezed = np.squeeze(img_processed, axis=0)
+                elif img_processed.ndim == 3:
+                    img_squeezed = img_processed
+                else:
+                    pbar.update(1)
+                    continue
+                
+                images.append(img_squeezed)
+                labels.append(label_int)
+                
+            except Exception as e:
+                if len(images) < 10:  # Solo mostrar primeros errores
+                    pbar.write(f"⚠️  Error al procesar imagen EMNIST: {e}")
+                pbar.update(1)
+                continue
+            
+            pbar.update(1)
+            
+            # Detener si hemos alcanzado el límite de muestras por clase
+            if samples_per_class is not None and len(images) >= num_classes * samples_per_class:
+                break
+    
+    if not images:
+        raise ValueError("No se pudo cargar ninguna imagen válida de EMNIST.")
+    
+    print(f"\n✅ EMNIST cargado exitosamente:")
+    print(f"   - Imágenes procesadas: {len(images)}")
+    print(f"   - Clases: {num_classes}")
+    
+    return np.array(images), np.array(labels), class_names
+
+# ==============================
+# 1.6. Combinar datasets
+# ==============================
+def combine_datasets(local_images: np.ndarray, local_labels: np.ndarray, local_classes: List[str],
+                     emnist_images: np.ndarray, emnist_labels: np.ndarray, emnist_classes: List[str]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """
+    Combina el dataset local con EMNIST, mapeando las clases correctamente.
+    """
+    print("\n=== COMBINANDO DATASETS ===")
+    
+    # Crear mapeo de clases EMNIST a índices locales
+    # EMNIST tiene letras en orden A-Z, a-z, 0-9
+    # Necesitamos mapear a nuestros nombres de clases
+    combined_classes = sorted(list(set(local_classes + emnist_classes)))
+    class_to_idx = {cls: idx for idx, cls in enumerate(combined_classes)}
+    
+    # Remapear etiquetas del dataset local
+    local_labels_remapped = np.array([class_to_idx[local_classes[label]] for label in local_labels])
+    
+    # Remapear etiquetas de EMNIST
+    emnist_labels_remapped = np.array([class_to_idx[emnist_classes[label]] for label in emnist_labels])
+    
+    # Combinar imágenes y etiquetas
+    combined_images = np.concatenate([local_images, emnist_images], axis=0)
+    combined_labels = np.concatenate([local_labels_remapped, emnist_labels_remapped], axis=0)
+    
+    print(f"✅ Datasets combinados:")
+    print(f"   - Total de imágenes: {len(combined_images)}")
+    print(f"   - Total de clases: {len(combined_classes)}")
+    print(f"   - Imágenes locales: {len(local_images)}")
+    print(f"   - Imágenes EMNIST: {len(emnist_images)}")
+    
+    return combined_images, combined_labels, combined_classes
+
+# ==============================
 # 2. Crear dataset tf.data (SIN CAMBIOS)
 # ==============================
 def create_tf_dataset(images, labels):
@@ -180,11 +347,46 @@ def create_tf_dataset(images, labels):
 # 3. Entrenamiento (MODIFICADO)
 # ==============================
 def train():
-    # --- Cargar dataset ---
+    # --- Cargar dataset local ---
+    local_images, local_labels, local_class_names = None, None, None
     try:
-        images, labels, class_names = load_dataset_from_directory(DATASET_DIR)
+        local_images, local_labels, local_class_names = load_dataset_from_directory(DATASET_DIR)
+        print(f"✅ Dataset local cargado: {len(local_images)} imágenes, {len(local_class_names)} clases")
     except (FileNotFoundError, ValueError) as e:
-        print(e)
+        print(f"⚠️  Error al cargar dataset local: {e}")
+        if not USE_EMNIST:
+            print("❌ No se puede continuar sin dataset local y EMNIST está deshabilitado.")
+            return
+    
+    # --- Cargar dataset EMNIST si está habilitado ---
+    emnist_images, emnist_labels, emnist_class_names = None, None, None
+    if USE_EMNIST and EMNIST_AVAILABLE:
+        try:
+            emnist_images, emnist_labels, emnist_class_names = load_emnist_dataset(
+                dataset_name=EMNIST_DATASET,
+                split=EMNIST_SPLIT,
+                samples_per_class=EMNIST_SAMPLES_PER_CLASS,
+                target_size=IMG_SIZE
+            )
+            print(f"✅ Dataset EMNIST cargado: {len(emnist_images)} imágenes, {len(emnist_class_names)} clases")
+        except Exception as e:
+            print(f"⚠️  Error al cargar EMNIST: {e}")
+            if local_images is None:
+                print("❌ No se puede continuar sin ningún dataset.")
+                return
+    
+    # --- Combinar datasets si ambos están disponibles ---
+    if local_images is not None and emnist_images is not None:
+        images, labels, class_names = combine_datasets(
+            local_images, local_labels, local_class_names,
+            emnist_images, emnist_labels, emnist_class_names
+        )
+    elif local_images is not None:
+        images, labels, class_names = local_images, local_labels, local_class_names
+    elif emnist_images is not None:
+        images, labels, class_names = emnist_images, emnist_labels, emnist_class_names
+    else:
+        print("❌ No hay datasets disponibles para entrenar.")
         return
         
     global NUM_CLASSES

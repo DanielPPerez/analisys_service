@@ -14,8 +14,8 @@ TEXT_COLOR = "black"
 FONT_SIZE = 90
 
 # Caracteres divididos por caja y tipo
-LOWERCASE_CHARS = list("abcdefghijklmnopqrstuvwxyz") + ['ñ', 'ch', 'll']
-UPPERCASE_CHARS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ['Ñ', 'Ch', 'Ll']
+LOWERCASE_CHARS = list("abcdefghijklmnopqrstuvwxyz") + ['ñ', 'ch', 'll', "rr"]
+UPPERCASE_CHARS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ['Ñ', 'Ch', 'Ll', "Rr"]
 NUMBERS = list("0123456789")
 
 # Diccionario que incluye explícitamente las carpetas para cada tipo

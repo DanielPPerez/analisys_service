@@ -143,6 +143,14 @@ CONSEJOS_POR_CODIGO = {
             "El trazo que hiciste es muy pequeño o corto para poder analizarlo en detalle. Intenta hacerlo un poco más grande.",
             "Necesitamos un trazo un poco más largo para poder darte un buen consejo sobre este punto."
         ]
+    },
+    "wrong_character": {
+        "tipo": "error",
+        "consejos": [
+            "Parece que la letra que escribiste no coincide con la letra que se esperaba. Por favor, asegúrate de escribir la letra correcta.",
+            "La imagen que enviaste no corresponde a la letra solicitada. Intenta escribir la letra correcta.",
+            "El análisis indica que la letra escrita es diferente a la esperada. Verifica que estés escribiendo la letra correcta."
+        ]
     }
 }
 
