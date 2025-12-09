@@ -77,7 +77,7 @@ DATASET_DIR = "data/variations"   # Directorio principal que contiene 'lower', '
 TEMPLATE_DIR = "data/plantillas"  # Se mantiene por si acaso
 BATCH_SIZE = 32
 IMG_SIZE = (128, 128)
-EPOCHS = 12
+EPOCHS = 30
 # *** AJUSTE SUGERIDO: Aumentar Epochs y/o Batch Size si los recursos lo permiten ***
 EPOCHS = 20 
 # BATCH_SIZE = 64 

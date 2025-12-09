@@ -3,9 +3,10 @@ __pycache__/
 .env
 env/
 venv/
-data/models/
+# Los modelos .keras se rastrean con Git LFS (ver .gitattributes)
+# data/models/ - comentado para permitir modelos con LFS
 *.h5
 *.pt
-*.keras
-*.keras.index
+# *.keras - comentado, se rastrea con Git LFS
+# *.keras.index - comentado, se rastrea con Git LFS
 

@@ -7,7 +7,7 @@ scikit-learn
 opencv-python-headless
 streamlit
 matplotlib
-Pillow
+Pillow>=10.0.0
 tqdm
 uvicorn
 albumentations

@@ -164,7 +164,7 @@ class AnalysisAdapter(IAnalyzer): # ¡Implementa el Puerto!
             # Error de preprocesamiento (imagen vacía, no decodificable, etc.)
             return {"error": str(e), "score": 0, "deviation_code": "no_contour_found"}
 
-        # 3. Calcular distancia y puntaje base del modelo siamés
+        # 3. Calcular distancia con el template esperado
         distance = np.linalg.norm(user_embedding - template_embedding)
         siamese_score = self._distance_to_score(float(distance))
         
@@ -172,10 +172,32 @@ class AnalysisAdapter(IAnalyzer): # ¡Implementa el Puerto!
         IDENTICAL_THRESHOLD = 0.1  # Umbral muy bajo para detectar imágenes idénticas
         is_identical = distance < IDENTICAL_THRESHOLD
         
-        # 3.6. Detectar si el carácter es completamente incorrecto (distancia muy alta)
-        # Si la distancia es muy alta, es probable que sea un carácter diferente
-        WRONG_CHAR_THRESHOLD = 8.0  # Umbral alto para detectar caracteres incorrectos
-        is_wrong_char = distance > WRONG_CHAR_THRESHOLD
+        # 3.6. Detectar si el carácter es completamente incorrecto
+        # Estrategia: Comparar con TODOS los templates para encontrar el más cercano
+        # Si el template más cercano NO es el esperado, entonces es un carácter incorrecto
+        is_wrong_char = False
+        if not is_identical and len(self.templates) > 1:
+            # Calcular distancia con todos los templates
+            min_distance = float('inf')
+            closest_char = None
+            
+            for char_name, template_emb in self.templates.items():
+                dist = np.linalg.norm(user_embedding - template_emb)
+                if dist < min_distance:
+                    min_distance = dist
+                    closest_char = char_name
+            
+            # Si el carácter más cercano NO es el esperado, es un carácter incorrecto
+            # También verificamos que la diferencia sea significativa (más del 20% de diferencia)
+            if closest_char != letter_char:
+                # Si la distancia al template esperado es significativamente mayor que la del más cercano
+                # o si la distancia al esperado es muy alta, es un carácter incorrecto
+                distance_ratio = distance / min_distance if min_distance > 0 else float('inf')
+                is_wrong_char = distance_ratio > 1.2 or distance > 5.0
+                
+                if is_wrong_char:
+                    print(f"⚠️  Carácter incorrecto detectado: Se esperaba '{letter_char}' pero el más cercano es '{closest_char}' "
+                          f"(distancia esperada: {distance:.2f}, distancia más cercana: {min_distance:.2f})")
         
         # 4. Análisis detallado CV (Llamada al servicio de Dominio)
         try:
@@ -233,33 +255,48 @@ class AnalysisAdapter(IAnalyzer): # ¡Implementa el Puerto!
             score_global = round(score_global, 1)
         
         # 6. Generar feedback basado en reglas (Lógica de Dominio)
-        feedback_base = self.rule_generator.generate_feedback({
-            "inclinacion": {
-                "score": inclinacion_score,
-                "deviation_code": inclinacion_data.get('deviation_code', 'no_data')
-            },
-            "proporcion": {
-                "score": proporcion_score,
-                "deviation_code": proporcion_data.get('deviation_code', 'no_data')
-            },
-            "espaciado": {
-                "score": espaciado_score,
-                "deviation_code": espaciado_data.get('deviation_code', 'no_data')
-            },
-            "consistencia": {
-                "score": consistencia_score,
-                "deviation_code": consistencia_data.get('deviation_code', 'no_data')
+        # Si es un carácter incorrecto, generar feedback especial
+        if is_wrong_char:
+            feedback_base = {
+                "fortalezas": "",
+                "areas_mejora": f"El carácter dibujado no corresponde a la letra '{letter_char}' esperada. Por favor, intenta dibujar la letra correcta."
             }
-        })
+        else:
+            feedback_base = self.rule_generator.generate_feedback({
+                "inclinacion": {
+                    "score": inclinacion_score,
+                    "deviation_code": inclinacion_data.get('deviation_code', 'no_data')
+                },
+                "proporcion": {
+                    "score": proporcion_score,
+                    "deviation_code": proporcion_data.get('deviation_code', 'no_data')
+                },
+                "espaciado": {
+                    "score": espaciado_score,
+                    "deviation_code": espaciado_data.get('deviation_code', 'no_data')
+                },
+                "consistencia": {
+                    "score": consistencia_score,
+                    "deviation_code": consistencia_data.get('deviation_code', 'no_data')
+                }
+            })
         
         # 7. Formatear la salida final (la puntuación y los códigos son lo importante para el LLM)
+        # Determinar deviation_code_global
+        if is_wrong_char:
+            deviation_code_global = "wrong_character"
+        elif feedback_base.get("areas_mejora") == "¡Tu letra es prácticamente perfecta! No tenemos ninguna sugerencia por ahora.":
+            deviation_code_global = "proporcion_optima"
+        else:
+            deviation_code_global = feedback_base.get("areas_mejora", "").split('.')[0] if feedback_base.get("areas_mejora") else "no_data"
+        
         return {
             "score_global": score_global,
             "puntuacion_inclinacion": inclinacion_score,
             "puntuacion_proporcion": proporcion_score,
             "puntuacion_espaciado": espaciado_score,
             "puntuacion_consistencia": consistencia_score,
-            "deviation_code_global": feedback_base.get("areas_mejora", "").split('.')[0] if feedback_base.get("areas_mejora") != "¡Tu letra es prácticamente perfecta! No tenemos ninguna sugerencia por ahora." else "proporcion_optima",
+            "deviation_code_global": deviation_code_global,
             "fortalezas_base": feedback_base.get("fortalezas", ""),
             "areas_mejora_base": feedback_base.get("areas_mejora", "")
         }
